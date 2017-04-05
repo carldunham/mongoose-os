@@ -134,7 +134,7 @@ static void mgos_atca_set_key(struct mg_rpc_request_info *ri, void *cb_arg,
   json_scanf(args.p, args.len, ri->args_fmt, &slot, &is_ecc, &key, &key_len,
              &write_key, &write_key_len, &wk_slot);
 
-  if (slot < 0 || slot > 15 || (is_ecc && slot > 7)) {
+  if (slot < 0 || slot > 15 ) {
     mg_rpc_send_errorf(ri, 400, "Invalid slot");
     ri = NULL;
     goto clean;
@@ -230,7 +230,7 @@ static void mgos_atca_sign(struct mg_rpc_request_info *ri, void *cb_arg,
   uint32_t digest_len = 0;
   json_scanf(args.p, args.len, ri->args_fmt, &slot, &digest, &digest_len);
 
-  if (slot < 0 || slot > 7) {
+  if (slot < 0 || slot > 15) {
     mg_rpc_send_errorf(ri, 400, "Invalid slot");
     ri = NULL;
     goto clean;

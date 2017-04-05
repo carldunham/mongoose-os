@@ -294,7 +294,7 @@ func atcaSetKey(ctx context.Context, dc *dev.DevConn) error {
 	var req *atcaService.SetKeyArgs
 
 	si := cfg.SlotInfo[slot]
-	if slot < 8 && si.KeyConfig.Private && si.KeyConfig.KeyType == atca.KeyTypeECC {
+	if si.KeyConfig.Private && si.KeyConfig.KeyType == atca.KeyTypeECC {
 		reportf("Slot %d is a ECC private key slot", slot)
 		req, err = atcaSetECCPrivateKey(slot, cfg, data)
 	} else {

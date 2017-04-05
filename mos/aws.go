@@ -223,8 +223,8 @@ func genCert(ctx context.Context, iotSvc *iot.IoT, devConn *dev.DevConn, devConf
 	reportf("Generating certificate request, CN: %s", cn)
 	var pkDERBytes []byte
 	if useATCA {
-		if atcaSlot < 0 || atcaSlot > 7 {
-			return "", "", errors.Errorf("ATCA slot for private key must be between 0 and 7")
+		if atcaSlot < 0 || atcaSlot > 15 {
+			return "", "", errors.Errorf("ATCA slot for private key must be between 0 and 15")
 		}
 		if certType != "" && strings.ToUpper(certType) != "ECDSA" {
 			return "", "", errors.Errorf("ATCA only supports EC keys")
