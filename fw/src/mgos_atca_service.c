@@ -4,6 +4,7 @@
  */
 
 #include "fw/src/mgos_atca.h"
+#include "fw/src/mgos_atca_internal.h"
 
 #if MGOS_ENABLE_RPC && MGOS_ENABLE_ATCA && MGOS_ENABLE_ATCA_SERVICE
 
@@ -130,8 +131,7 @@ static void mgos_atca_set_key(struct mg_rpc_request_info *ri, void *cb_arg,
   uint8_t *key = NULL, *write_key = NULL;
   uint32_t key_len = 0, write_key_len = 0;
   uint32_t wk_slot = 0;
-  bool is_ecc = false;
-  json_scanf(args.p, args.len, ri->args_fmt, &slot, &is_ecc, &key, &key_len,
+  json_scanf(args.p, args.len, ri->args_fmt, &slot, &key, &key_len,
              &write_key, &write_key_len, &wk_slot);
 
   if (slot < 0 || slot > 15 ) {
@@ -140,21 +140,60 @@ static void mgos_atca_set_key(struct mg_rpc_request_info *ri, void *cb_arg,
     goto clean;
   }
 
-  uint32_t exp_key_len = (is_ecc ? ATCA_PRIV_KEY_SIZE : ATCA_KEY_SIZE);
-  if (key_len != exp_key_len) {
-    mg_rpc_send_errorf(ri, 400, "Expected %d bytes, got %d", (int) exp_key_len,
-                       (int) key_len);
+  ATCA_STATUS status;
+  uint32_t max_key_len;
+  status = atcab_get_zone_size(ATCA_ZONE_DATA, slot, &max_key_len);
+
+  if (status != ATCA_SUCCESS) {
+    mg_rpc_send_errorf(ri, 500, "Failed to get slot size: 0x%02x", status);
     ri = NULL;
     goto clean;
   }
 
-  ATCA_STATUS status;
-  if (is_ecc) {
-    uint8_t key_arg[4 + ATCA_PRIV_KEY_SIZE];
-    memset(key_arg, 0, 4);
-    memcpy(key_arg + 4, key, ATCA_PRIV_KEY_SIZE);
-    status = atcab_priv_write(slot, key_arg, wk_slot,
-                              (write_key_len == 32 ? write_key : NULL));
+  if (key_len > max_key_len) {
+    mg_rpc_send_errorf(ri, 400, "Expected %d bytes maximum, got %d",
+                       (int) max_key_len, (int) key_len);
+    ri = NULL;
+    goto clean;
+  }
+
+  key_config_t key_conf;
+  status = get_key_config(slot, &key_conf);
+
+  if (status != ATCA_SUCCESS) {
+    mg_rpc_send_errorf(ri, 500, "Failed to get KeyConfig: 0x%02x", status);
+    ri = NULL;
+    goto clean;
+  }
+
+  if (key_conf.key_type == KEY_TYPE_ECC) {
+
+    if (key_conf.private) {
+
+      if (key_len != ATCA_PRIV_KEY_SIZE) {
+        mg_rpc_send_errorf(ri, 500,
+                           "Invalid length for private ECC key: %d", key_len);
+        ri = NULL;
+        goto clean;
+      }
+      uint8_t key_arg[4 + ATCA_PRIV_KEY_SIZE];
+      memset(key_arg, 0, 4);
+      memcpy(key_arg + 4, key, ATCA_PRIV_KEY_SIZE);
+      status = atcab_priv_write(slot, key_arg, wk_slot,
+                                  (write_key_len == 32 ? write_key : NULL));
+    } else if (slot >= 8) {
+      if (key_len != ATCA_PUB_KEY_SIZE) {
+        mg_rpc_send_errorf(ri, 500,
+                           "Invalid length for public ECC key: %d", key_len);
+        ri = NULL;
+        goto clean;
+      }
+      status = atcab_write_pubkey(slot, key);
+    } else {
+      mg_rpc_send_errorf(ri, 500, "Invalid slot for public ECC key: %d", slot);
+      ri = NULL;
+      goto clean;
+    }
   } else {
     status = atcab_write_zone(ATCA_ZONE_DATA, slot, 0, 0, key, key_len);
   }
@@ -173,7 +212,7 @@ clean:
   (void) cb_arg;
 }
 
-static void mgos_atca_get_or_gen_key(struct mg_rpc_request_info *ri,
+static void mgos_atca_get_public_key(struct mg_rpc_request_info *ri,
                                      void *cb_arg, struct mg_rpc_frame_info *fi,
                                      struct mg_str args) {
   if (!fi->channel_is_trusted) {
@@ -192,22 +231,80 @@ static void mgos_atca_get_or_gen_key(struct mg_rpc_request_info *ri,
     goto clean;
   }
 
-  if (strcmp((const char *) cb_arg, "ATCA.GenKey") == 0) {
-    ATCA_STATUS status = atcab_genkey(slot, pubkey);
+  key_config_t key_conf;
+  ATCA_STATUS status = get_key_config(slot, &key_conf);
+
+  if (status != ATCA_SUCCESS) {
+    mg_rpc_send_errorf(ri, 500, "Failed to get KeyConfig: 0x%02x", status);
+    ri = NULL;
+    goto clean;
+  }
+
+  bool is_locked;
+  status = atcab_is_slot_locked(slot, &is_locked);
+  LOG(LL_DEBUG, ("slot %d: %slocked, [%d]", slot, is_locked?"":"un", status));
+
+  if (key_conf.key_type != KEY_TYPE_ECC) {
+    mg_rpc_send_errorf(ri, 500, "Not an ECC key");
+    ri = NULL;
+    goto clean;
+  }
+
+  if (key_conf.private) {
+    status = atcab_get_pubkey(slot, pubkey);
     if (status != ATCA_SUCCESS) {
-      mg_rpc_send_errorf(ri, 500, "Failed generate key on slot %d: 0x%02x",
+      mg_rpc_send_errorf(ri, 500,
+                         "Failed to get public key for key in slot %d: 0x%02x",
+                         slot, status);
+      ri = NULL;
+      goto clean;
+    }
+  } else if (slot >= 8) {
+    ATCA_STATUS status =  atcab_read_pubkey(slot, pubkey);
+    if (status != ATCA_SUCCESS) {
+      mg_rpc_send_errorf(ri, 500, "Failed to get key from slot %d: 0x%02x",
                          slot, status);
       ri = NULL;
       goto clean;
     }
   } else {
-    ATCA_STATUS status = atcab_get_pubkey(slot, pubkey);
-    if (status != ATCA_SUCCESS) {
-      mg_rpc_send_errorf(ri, 500, "Failed get public key for slot %d: 0x%02x",
-                         slot, status);
-      ri = NULL;
-      goto clean;
-    }
+    mg_rpc_send_errorf(ri, 400, "Invalid slot for public key");
+    ri = NULL;
+    goto clean;
+  }
+
+  mg_rpc_send_responsef(ri, "{pubkey: %V}", pubkey, sizeof(pubkey));
+  ri = NULL;
+
+clean:
+  return;
+}
+
+static void mgos_atca_gen_key(struct mg_rpc_request_info *ri,
+                              void *cb_arg, struct mg_rpc_frame_info *fi,
+                              struct mg_str args) {
+  if (!fi->channel_is_trusted) {
+    mg_rpc_send_errorf(ri, 403, "unauthorized");
+    ri = NULL;
+    return;
+  }
+
+  uint8_t pubkey[ATCA_PUB_KEY_SIZE];
+  int slot = -1;
+  json_scanf(args.p, args.len, ri->args_fmt, &slot);
+
+  if (slot < 0 || slot > 15) {
+    mg_rpc_send_errorf(ri, 400, "Invalid slot");
+    ri = NULL;
+    goto clean;
+  }
+
+  ATCA_STATUS status = atcab_genkey(slot, pubkey);
+  if (status != ATCA_SUCCESS) {
+    mg_rpc_send_errorf(ri, 500, "Failed generate key on slot %d: 0x%02x",
+                       slot, status);
+    ri = NULL;
+    goto clean;
   }
 
   mg_rpc_send_responsef(ri, "{pubkey: %V}", pubkey, sizeof(pubkey));
@@ -271,13 +368,11 @@ enum mgos_init_result mgos_atca_service_init(void) {
                      NULL);
   mg_rpc_add_handler(c, "ATCA.LockZone", "{zone: %d}", mgos_atca_lock_zone,
                      NULL);
-  mg_rpc_add_handler(c, "ATCA.SetKey",
-                     "{slot:%d, ecc:%B, key:%V, wkey:%V, wkslot:%u}",
+  mg_rpc_add_handler(c, "ATCA.SetKey", "{slot:%d, key:%V, wkey:%V, wkslot:%u}",
                      mgos_atca_set_key, NULL);
-  mg_rpc_add_handler(c, "ATCA.GenKey", "{slot: %d}", mgos_atca_get_or_gen_key,
-                     "ATCA.GenKey");
+  mg_rpc_add_handler(c, "ATCA.GenKey", "{slot: %d}", mgos_atca_gen_key, NULL);
   mg_rpc_add_handler(c, "ATCA.GetPubKey", "{slot: %d}",
-                     mgos_atca_get_or_gen_key, "ATCA.GetPubKey");
+                     mgos_atca_get_public_key, NULL);
   mg_rpc_add_handler(c, "ATCA.Sign", "{slot: %d, digest: %V}", mgos_atca_sign,
                      NULL);
   return MGOS_INIT_OK;

@@ -30,9 +30,6 @@ methods:
       slot:
         type: integer
         doc: Slot number, 0 to 15
-      ecc:
-        type: boolean
-        doc: Whether key is a ECC private key or not
       key:
         type: string
         doc: Base64 encoded key
@@ -57,7 +54,7 @@ methods:
           doc: Base64 encoded public key corresponding to the newly generated private key
 
   GetPubKey:
-    doc: Retrieve the public key corresponding to a private key
+    doc: Retrieve the public key, possibly corresponding to a private key
     args:
       slot:
         type: integer
@@ -67,7 +64,7 @@ methods:
       properties:
         pubkey:
           type: string
-          doc: Base64 encoded public key corresponding to the private key stored in the given slot
+          doc: Base64 encoded public key corresponding to the key stored in the given slot
 
   Sign:
     doc: Sign a 32-byte digest with a private ECC key

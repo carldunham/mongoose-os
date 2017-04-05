@@ -68,7 +68,7 @@ ifeq "$(MGOS_ENABLE_ATCA)" "1"
   SYS_CONF_SCHEMA += $(MGOS_SRC_PATH)/mgos_atca_config.yaml
 
   ifeq "$(MGOS_ENABLE_RPC)$(MGOS_ENABLE_ATCA_SERVICE)" "11"
-    MGOS_SRCS += mgos_atca_service.c
+    MGOS_SRCS += mgos_atca_internal.c mgos_atca_service.c
     MGOS_FEATURES += -DMGOS_ENABLE_ATCA_SERVICE
   else
     MGOS_FEATURES += -DMGOS_ENABLE_ATCA_SERVICE=0

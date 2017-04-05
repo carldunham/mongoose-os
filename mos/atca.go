@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -232,8 +233,7 @@ func atcaSetECCPrivateKey(slot int64, cfg *atca.Config, data []byte) (*atcaServi
 	}
 
 	b64k := base64.StdEncoding.EncodeToString(keyData)
-	isECC := true
-	req := &atcaService.SetKeyArgs{Key: &b64k, Ecc: &isECC}
+	req := &atcaService.SetKeyArgs{Key: &b64k}
 
 	if cfg.LockValue == atca.LockModeLocked {
 		if cfg.SlotInfo[slot].SlotConfig.WriteConfig&0x4 == 0 {
@@ -265,6 +265,97 @@ func atcaSetECCPrivateKey(slot int64, cfg *atca.Config, data []byte) (*atcaServi
 	return req, nil
 }
 
+func zeroPad32(byteArray []byte) []byte {
+
+ 	if len(byteArray) >= 32 {
+    	return byteArray
+  	}
+	padding := [32]byte{}
+
+	return append(padding[:(32 - len(byteArray))], byteArray[:]...)
+}
+
+func atcaSetECCPublicKey(slot int64, cfg *atca.Config, data []byte) (*atcaService.SetKeyArgs, error) {
+	var keyData []byte
+
+	rest := data
+	for {
+		var pb *pem.Block
+		pb, rest = pem.Decode(rest)
+		if pb != nil {
+			if pb.Type != "PUBLIC KEY" {
+				continue
+			}
+			pubkey, err := x509.ParsePKIXPublicKey(pb.Bytes)
+			if err != nil {
+				return nil, errors.Annotatef(err, "ParsePKIXPublicKey")
+			}
+	      	switch pubkey := pubkey.(type) {
+	      	  case *ecdsa.PublicKey:
+	        	break
+	      	  default:
+	        	return nil, errors.Errorf("Expecting ECC public key, got %s", pubkey)
+	      	}
+	      	eck := pubkey.(*ecdsa.PublicKey)
+			keyData = append(zeroPad32(eck.X.Bytes()), zeroPad32(eck.Y.Bytes())...)
+			break
+		} else {
+			keyData = atca.ReadHex(data)
+			break
+		}
+	}
+
+	if len(keyData) != atca.PublicKeySize {
+		return nil, errors.Errorf("expected %d bytes, got %d", atca.PublicKeySize, len(keyData))
+	}
+
+	b64k := base64.StdEncoding.EncodeToString(keyData)
+	req := &atcaService.SetKeyArgs{Key: &b64k}
+
+	if cfg.LockValue == atca.LockModeLocked {
+		if cfg.SlotInfo[slot].SlotConfig.WriteConfig&0x4 == 0 {
+			return nil, errors.Errorf(
+				"data zone is locked and encrypted writes on slot %d "+
+					"are not enabled, key cannot be set", slot)
+		}
+		wks := int64(cfg.SlotInfo[slot].SlotConfig.WriteKey)
+		if writeKey == "" {
+			return nil, errors.Errorf(
+				"data zone is locked, --write-key for slot %d "+
+					"is required to modify slot %d", wks, slot)
+		}
+		reportf("Data zone is locked, "+
+			"will perform encrypted write using slot %d using %s", wks, writeKey)
+		wKeyData, err := ioutil.ReadFile(writeKey)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		wKey := atca.ReadHex(wKeyData)
+		if len(wKey) != atca.KeySize {
+			return nil, errors.Errorf("%s: expected %d bytes, got %d", writeKey, atca.KeySize, len(wKey))
+		}
+		b64wk := base64.StdEncoding.EncodeToString(wKey)
+		req.Wkslot = &wks
+		req.Wkey = &b64wk
+	}
+
+	return req, nil
+}
+
+func atcaKeySlotSize(slot int64) (l int, err error) {
+	switch {
+	  case (slot < 0) || (slot > 15):
+		return 0, errors.Errorf("invalid slot number %d", slot)
+	  case slot <= 7:
+		l = 36
+	  case slot == 8:
+		l = 416
+	  case slot <= 15:
+		l = 72
+	}
+	return l, nil
+}
+
 func atcaSetKey(ctx context.Context, dc *dev.DevConn) error {
 	args := flag.Args()
 	if len(args) != 3 {
@@ -294,18 +385,26 @@ func atcaSetKey(ctx context.Context, dc *dev.DevConn) error {
 	var req *atcaService.SetKeyArgs
 
 	si := cfg.SlotInfo[slot]
-	if si.KeyConfig.Private && si.KeyConfig.KeyType == atca.KeyTypeECC {
-		reportf("Slot %d is a ECC private key slot", slot)
-		req, err = atcaSetECCPrivateKey(slot, cfg, data)
+	if si.KeyConfig.KeyType == atca.KeyTypeECC {
+
+	  	if si.KeyConfig.Private {
+	  		reportf("Slot %d is an ECC private key slot", slot)
+	  		req, err = atcaSetECCPrivateKey(slot, cfg, data)
+	    } else if slot < 8 {
+			return errors.Errorf("ECC public key will not fit in slot %d", slot)
+	    } else {
+	  		reportf("Slot %d is an ECC public key slot", slot)
+	  		req, err = atcaSetECCPublicKey(slot, cfg, data)
+	    }
 	} else {
-		reportf("Slot %d is a non-ECC private key slot", slot)
+		reportf("Slot %d is a non-ECC key slot", slot)
 		keyData := atca.ReadHex(data)
-		if len(keyData) != atca.KeySize {
-			return errors.Errorf("%s: expected %d bytes, got %d", fn, atca.KeySize, len(keyData))
+    	slotSize, _ := atcaKeySlotSize(slot)
+		if len(keyData) > slotSize {
+			return errors.Errorf("%s: expected up to %d bytes, got %d", fn, slotSize, len(keyData))
 		}
 		b64k := base64.StdEncoding.EncodeToString(keyData)
-		isECC := false
-		req = &atcaService.SetKeyArgs{Key: &b64k, Ecc: &isECC}
+		req = &atcaService.SetKeyArgs{Key: &b64k}
 	}
 
 	if err != nil {
@@ -445,11 +544,16 @@ func atcaGetPubKey(ctx context.Context, dc *dev.DevConn) error {
 		csrTemplate = args[2]
 	}
 
-	cl, _, _, err := atca.Connect(ctx, dc)
+	cl, _, cfg, err := atca.Connect(ctx, dc)
 	if err != nil {
 		return errors.Annotatef(err, "Connect")
 	}
 
+	si := cfg.SlotInfo[slot]
+
+	if si.KeyConfig.KeyType != atca.KeyTypeECC {
+		return errors.New("not an ECC key")
+	}
 	req := &atcaService.GetPubKeyArgs{Slot: &slot}
 
 	r, err := cl.GetPubKey(ctx, req)
