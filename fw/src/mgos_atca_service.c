@@ -88,7 +88,8 @@ static void mgos_atca_lock_zone(struct mg_rpc_request_info *ri, void *cb_arg,
   }
 
   int zone = -1;
-  json_scanf(args.p, args.len, ri->args_fmt, &zone);
+  int slot = -1;
+  json_scanf(args.p, args.len, ri->args_fmt, &zone, &slot);
 
   ATCA_STATUS status;
   uint8_t lock_response = 0;
@@ -99,22 +100,30 @@ static void mgos_atca_lock_zone(struct mg_rpc_request_info *ri, void *cb_arg,
     case LOCK_ZONE_DATA:
       status = atcab_lock_data_zone(&lock_response);
       break;
+    case LOCK_ZONE_DATA_SLOT:
+      if (slot == -1) {
+        mg_rpc_send_errorf(ri, 403, "Slot not specified");
+        goto clean;
+      } else if (slot < 0 || slot > 15) {
+        mg_rpc_send_errorf(ri, 403, "Invalid slot: %d", slot);
+        goto clean;
+      }
+      status = atcab_lock_data_slot(slot, &lock_response);
+      break;
     default:
       mg_rpc_send_errorf(ri, 403, "Invalid zone");
-      ri = NULL;
       goto clean;
   }
 
   if (status != ATCA_SUCCESS) {
     mg_rpc_send_errorf(ri, 500, "Failed to lock zone %d: 0x%02x", zone, status);
-    ri = NULL;
     goto clean;
   }
 
   mg_rpc_send_responsef(ri, NULL);
-  ri = NULL;
 
 clean:
+  ri = NULL;
   (void) cb_arg;
 }
 
@@ -366,8 +375,8 @@ enum mgos_init_result mgos_atca_service_init(void) {
   mg_rpc_add_handler(c, "ATCA.GetConfig", "", mgos_atca_get_config, NULL);
   mg_rpc_add_handler(c, "ATCA.SetConfig", "{config: %V}", mgos_atca_set_config,
                      NULL);
-  mg_rpc_add_handler(c, "ATCA.LockZone", "{zone: %d}", mgos_atca_lock_zone,
-                     NULL);
+  mg_rpc_add_handler(c, "ATCA.LockZone", "{zone: %d, slot:%d}",
+                     mgos_atca_lock_zone, NULL);
   mg_rpc_add_handler(c, "ATCA.SetKey", "{slot:%d, key:%V, wkey:%V, wkslot:%u}",
                      mgos_atca_set_key, NULL);
   mg_rpc_add_handler(c, "ATCA.GenKey", "{slot: %d}", mgos_atca_gen_key, NULL);

@@ -20,6 +20,7 @@ type LockZone int
 const (
 	LockZoneConfig LockZone = 0
 	LockZoneData            = 1
+	LockZoneDataSlot        = 2
 )
 
 type Config struct {

@@ -48,6 +48,7 @@ type GetPubKeyResult struct {
 
 type LockZoneArgs struct {
 	Zone *int64 `json:"zone,omitempty"`
+	Slot *int64 `json:"slot,omitempty"`
 }
 
 type SetConfigArgs struct {

@@ -161,16 +161,28 @@ func atcaSetConfig(ctx context.Context, dc *dev.DevConn) error {
 
 func atcaLockZone(ctx context.Context, dc *dev.DevConn) error {
 	args := flag.Args()
-	if len(args) != 2 {
+	if len(args) < 2 {
 		return errors.Errorf("lock zone name is required (config or data)")
 	}
 
 	var zone atca.LockZone
+	var slot int64
+
 	switch strings.ToLower(args[1]) {
 	case "config":
 		zone = atca.LockZoneConfig
 	case "data":
 		zone = atca.LockZoneData
+	case "slot":
+		if len(args) != 3 {
+			return errors.Errorf("slot number is required (0-15)")
+		}
+		var err error
+		slot, err = strconv.ParseInt(args[2], 0, 64)
+		if err != nil || slot < 0 || slot > 15 {
+			return errors.Errorf("invalid slot number %q", args[2])
+		}
+		zone = atca.LockZoneDataSlot
 	default:
 		return errors.Errorf("invalid zone '%s'", args[1])
 	}
@@ -182,6 +194,10 @@ func atcaLockZone(ctx context.Context, dc *dev.DevConn) error {
 
 	zoneInt := int64(zone)
 	req := &atcaService.LockZoneArgs{Zone: &zoneInt}
+	if (zone == atca.LockZoneDataSlot) {
+		slotInt := int64(slot)
+		req.Slot = &slotInt;
+	}
 
 	if *dryRun {
 		reportf("This is a dry run, would have sent the following request:\n\n"+
