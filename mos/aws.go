@@ -50,6 +50,8 @@ const (
 
 var (
 	awsRegion    = ""
+	awsCredFile  = ""
+	awsProfile   = ""
 	awsIoTPolicy = ""
 	awsIoTThing  = ""
 	useATCA      = false
@@ -62,6 +64,8 @@ var (
 
 func init() {
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region to use. If not specified, uses the default")
+	flag.StringVar(&awsCredFile, "aws-cred-file", "", "Name of AWS credentials file. If not specified, uses the AWS default")
+	flag.StringVar(&awsProfile, "aws-profile", "", "AWS profile. If not specified, uses the default from your AWS config")
 	flag.BoolVar(&useATCA, "use-atca", false, "Use ATCA (AECC508A) to store private key.")
 	flag.IntVar(&atcaSlot, "atca-slot", 0, "When using ATCA, use this slot for key storage.")
 	flag.StringVar(&certType, "cert-type", "", "Type of the key for new cert, RSA or ECDSA. Default is ECDSA.")
@@ -134,10 +138,20 @@ func getSvc() (*iot.IoT, error) {
 		}
 	}
 
+	if awsProfile == "" {
+		output, err := getCommandOutput("aws", "configure", "get", "profile")
+		if err != nil {
+			reportf("Failed to get default AWS profile, please specify --aws-profile")
+			return nil, errors.New("AWS profile not specified")
+		} else {
+			awsProfile = strings.TrimSpace(output)
+		}
+	}
+
 	reportf("AWS region: %s", awsRegion)
 	cfg.Region = aws.String(awsRegion)
 
-	creds := credentials.NewSharedCredentials("", "")
+	creds := credentials.NewSharedCredentials(awsCredFile, awsProfile)
 	if err := checkAwsCredentials(); err != nil {
 		// In UI mode, UI credentials are acquired in a different way.
 		if isUI {
@@ -153,7 +167,7 @@ func getSvc() (*iot.IoT, error) {
 }
 
 func checkAwsCredentials() error {
-	creds := credentials.NewSharedCredentials("", "")
+	creds := credentials.NewSharedCredentials(awsCredFile, awsProfile)
 	_, err := creds.Get()
 	return err
 }
@@ -385,7 +399,7 @@ func genCert(ctx context.Context, iotSvc *iot.IoT, devConn *dev.DevConn, devConf
 }
 
 func storeCreds(ak, sak string) (*credentials.Credentials, error) {
-	sc := &credentials.SharedCredentialsProvider{}
+	sc := &credentials.SharedCredentialsProvider{Filename: awsCredFile, Profile: awsProfile}
 	_, _ = sc.Retrieve() // This will fail, but we only need it to initialize Filename
 	if sc.Filename == "" {
 		return nil, errors.New("Could not determine file for cred storage")
@@ -394,8 +408,12 @@ func storeCreds(ak, sak string) (*credentials.Credentials, error) {
 	if err != nil {
 		cf = ini.Empty()
 	}
-	cf.Section("default").NewKey("aws_access_key_id", ak)
-	cf.Section("default").NewKey("aws_secret_access_key", sak)
+	profile := sc.Profile
+	if profile == "" {
+		profile = "default"
+	}
+	cf.Section(profile).NewKey("aws_access_key_id", ak)
+	cf.Section(profile).NewKey("aws_secret_access_key", sak)
 
 	os.MkdirAll(filepath.Dir(sc.Filename), 0700)
 	if err = cf.SaveTo(sc.Filename); err != nil {
@@ -406,7 +424,7 @@ func storeCreds(ak, sak string) (*credentials.Credentials, error) {
 	reportf("Wrote credentials to: %s", sc.Filename)
 
 	// This should now succeed.
-	creds := credentials.NewSharedCredentials("", "")
+	creds := credentials.NewSharedCredentials(awsCredFile, awsProfile)
 	_, err = creds.Get()
 	if err != nil {
 		os.Remove(sc.Filename)
