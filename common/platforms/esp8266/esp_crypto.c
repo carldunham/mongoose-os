@@ -106,4 +106,24 @@ int atcac_sw_sha2_256(const uint8_t *data, size_t data_size,
   return 0;
 }
 
+typedef mbedtls_sha256_context atcac_sha2_256_ctx;
+
+int atcac_sw_sha2_256_init(atcac_sha2_256_ctx *ctx) {
+  mbedtls_sha256_init(ctx);
+  mbedtls_sha256_starts(ctx, false /* is_224 */);
+  return 0;
+}
+
+int atcac_sw_sha2_256_update(atcac_sha2_256_ctx *ctx,
+                             const uint8_t *data, size_t data_size) {
+  mbedtls_sha256_update(ctx, data, data_size);
+  return 0;
+}
+
+int atcac_sw_sha2_256_finish(atcac_sha2_256_ctx *ctx, uint8_t digest[32]) {
+  mbedtls_sha256_finish(ctx, digest);
+  mbedtls_sha256_free(ctx);
+  return 0;
+}
+
 #endif /* MG_ENABLE_SSL */
